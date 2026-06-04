@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VRChat LLM Bridge</title>
+<style>
+/* ===== Reset & Variables ===== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#fafafa;--surface:#fff;--surface2:#f5f5f5;
+  --accent:#2563eb;--accent-hover:#1d4ed8;--danger:#dc2626;
+  --green:#16a34a;--yellow:#d97706;--pink:#db2777;--cyan:#0891b2;
+  --text:#1a1a1a;--text2:#9ca3af;--border:#e5e7eb;--border2:#d1d5db;
+  --font-mono:"JetBrains Mono","Cascadia Code","Fira Code","Consolas",monospace;
+  --font-ui:"Outfit",-apple-system,sans-serif;
+  --radius:10px;--radius-sm:6px;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.04);--shadow:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+  --shadow-lg:0 4px 6px rgba(0,0,0,.04),0 2px 4px rgba(0,0,0,.04);
+}
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap');
+
+body{
+  background:var(--bg);color:var(--text);font-family:var(--font-ui);
+  min-height:100vh;-webkit-font-smoothing:antialiased;
+}
+
+.app{max-width:800px;margin:0 auto;padding:32px 24px;display:flex;flex-direction:column;gap:20px}
+
+/* ===== Header ===== */
+.header{display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:10px}
+.logo-icon{
+  width:34px;height:34px;border-radius:8px;background:var(--accent);
+  display:flex;align-items:center;justify-content:center;font-size:16px;color:#fff;
+}
+.logo h1{font-size:20px;font-weight:600;letter-spacing:-.3px}
+.logo span{color:var(--text2);font-size:13px;font-weight:400;margin-left:4px}
+
+/* ===== Status Bar ===== */
+.status-bar{
+  display:flex;align-items:center;gap:14px;padding:14px 18px;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:var(--shadow-sm);
+}
+.status-dot{width:9px;height:9px;border-radius:50%;background:var(--text2);transition:all .3s}
+.status-dot.on{background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.status-text{font-size:13px;color:var(--text2)}
+.status-text strong{color:var(--text);font-weight:500}
+
+/* ===== Buttons ===== */
+.btn{
+  padding:9px 18px;border:none;border-radius:var(--radius-sm);font-size:13px;
+  font-weight:500;cursor:pointer;transition:all .15s;font-family:var(--font-ui);
+  letter-spacing:-.2px;
+}
+.btn-start{background:var(--accent);color:#fff;box-shadow:var(--shadow)}
+.btn-start:hover{background:var(--accent-hover)}
+.btn-stop{background:var(--danger);color:#fff}
+.btn-stop:hover{background:#b91c1c}
+.btn-settings{
+  background:var(--surface);color:var(--text);border:1px solid var(--border);
+  box-shadow:var(--shadow-sm);
+}
+.btn-settings:hover{background:var(--surface2)}
+
+/* ===== Log Area ===== */
+.log-container{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  overflow:hidden;box-shadow:var(--shadow-sm);
+}
+.log-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:10px 16px;background:var(--surface2);border-bottom:1px solid var(--border);
+  font-size:11px;color:var(--text2);font-family:var(--font-mono);
+}
+.log-body{
+  overflow-y:auto;padding:6px 0;font-family:var(--font-mono);font-size:12px;
+  line-height:1.7;max-height:320px;background:#fcfcfc;
+}
+.log-body::-webkit-scrollbar{width:4px}
+.log-body::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
+.log-line{
+  padding:2px 16px;color:var(--text2);white-space:pre-wrap;word-break:break-all;
+  border-left:2px solid transparent;
+}
+.log-line .cyan{color:var(--cyan)}.log-line .pink{color:var(--pink)}
+.log-line .green{color:var(--green)}.log-line .yellow{color:var(--yellow)}
+.log-line .dim{color:#ccc}.log-line .accent{color:var(--accent)}
+
+/* ===== Settings Modal ===== */
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:100;
+  display:flex;align-items:center;justify-content:center;
+  opacity:0;pointer-events:none;transition:opacity .2s;
+}
+.modal-overlay.open{opacity:1;pointer-events:all}
+.modal{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  width:540px;max-height:80vh;overflow-y:auto;box-shadow:var(--shadow-lg);
+}
+.modal-header{
+  padding:16px 20px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;background:var(--surface);z-index:2;
+}
+.modal-header h2{font-size:16px;font-weight:600}
+.modal-close{background:none;border:none;color:var(--text2);font-size:18px;cursor:pointer}
+.modal-close:hover{color:var(--danger)}
+.modal-body{padding:16px 20px;display:flex;flex-direction:column;gap:14px}
+.modal-body label{font-size:12px;color:var(--text2);display:block;margin-bottom:3px;font-weight:500}
+.modal-body input,.modal-body textarea,.modal-body select{
+  width:100%;padding:9px 11px;background:var(--surface);border:1px solid var(--border2);
+  border-radius:var(--radius-sm);color:var(--text);font-size:13px;font-family:var(--font-mono);
+  outline:none;transition:border-color .15s;
+}
+.modal-body input:focus,.modal-body textarea:focus,.modal-body select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.1)}
+.modal-body textarea{resize:vertical;min-height:90px}
+.tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:8px}
+.tab{
+  padding:8px 14px;background:none;border:none;color:var(--text2);
+  font-size:13px;cursor:pointer;font-family:var(--font-ui);transition:all .15s;
+  border-bottom:2px solid transparent;margin-bottom:-2px;font-weight:500;
+}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-content{display:none}.tab-content.active{display:block}
+.slider-row{display:flex;align-items:center;gap:10px}
+.slider-row input[type=range]{flex:1;accent-color:var(--accent)}
+.slider-val{color:var(--accent);font-family:var(--font-mono);font-size:13px;min-width:36px;text-align:right;font-weight:500}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">
+      <div class="logo-icon">🎙</div>
+      <div><h1>VRChat LLM Bridge</h1><span>语音识别 · AI 对话 · 聊天框</span></div>
+    </div>
+  </div>
+
+  <!-- Status -->
+  <div class="status-bar">
+    <span class="status-dot" id="statusDot"></span>
+    <span class="status-text" id="statusText"><strong>⚫ 就绪</strong> · 点击启动</span>
+    <span style="flex:1"></span>
+    <button class="btn btn-settings" id="btnTts" onclick="toggleTts()" title="语音合成开关">🔇</button>
+    <button class="btn btn-start" id="btnToggle" onclick="toggle()">▶ 开启对话</button>
+    <button class="btn btn-settings" onclick="openSettings()">⚙ 设置</button>
+  </div>
+
+  <!-- Log -->
+  <div class="log-container">
+    <div class="log-header">
+      <span>Terminal · vrchat-llm</span>
+      <span id="logCount">0 条日志</span>
+    </div>
+    <div class="log-body" id="logBody">
+      <div class="log-line dim">等待启动...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>设置</h2>
+      <button class="modal-close" onclick="closeSettings()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="tabs">
+        <button class="tab active" onclick="switchTab('persona')">人设</button>
+        <button class="tab" onclick="switchTab('stt')">语音识别</button>
+        <button class="tab" onclick="switchTab('llm')">对话模型</button>
+        <button class="tab" onclick="switchTab('tts')">语音合成</button>
+      </div>
+
+      <div class="tab-content active" id="tab-persona">
+        <label>系统提示词</label>
+        <textarea id="cfg-prompt" rows="5" placeholder="描述 AI 的人设..."></textarea>
+        <label>回复前缀</label>
+        <input id="cfg-prefix" placeholder="(AI喜多郁代) ">
+      </div>
+
+      <div class="tab-content" id="tab-stt">
+        <label>语音识别模型</label>
+        <select id="cfg-stt-provider" onchange="updateSTTFields()">
+          <option value="groq_whisper">Groq Whisper (免费, 最快)</option>
+          <option value="openai_whisper">OpenAI Whisper</option>
+          <option value="dashscope_qwen_asr">Qwen ASR (DashScope)</option>
+        </select>
+        <div id="stt-groq">
+          <label>Groq API Key</label>
+          <input type="password" id="cfg-groq-key" placeholder="gsk_...">
+        </div>
+        <div id="stt-openai" style="display:none">
+          <label>OpenAI API Key</label>
+          <input type="password" id="cfg-openai-key" placeholder="sk-...">
+        </div>
+        <div id="stt-qwen" style="display:none">
+          <label>DashScope API Key</label>
+          <input type="password" id="cfg-qwen-key" placeholder="sk-...">
+          <label>Model</label>
+          <input id="cfg-qwen-model" value="qwen3-asr-flash">
+        </div>
+      </div>
+
+      <div class="tab-content" id="tab-llm">
+        <label>对话模型</label>
+        <select id="cfg-llm-provider" onchange="updateLLMFields()">
+          <option value="openai_compatible">OpenAI 兼容 (DeepSeek 等)</option>
+          <option value="openai">OpenAI</option>
+          <option value="ollama">Ollama (本地)</option>
+        </select>
+        <div id="llm-oc">
+          <label>API Key</label>
+          <input type="password" id="cfg-llm-oc-key" placeholder="sk-...">
+          <label>Base URL</label>
+          <input id="cfg-llm-oc-url" value="https://api.deepseek.com/v1">
+          <label>Model</label>
+          <input id="cfg-llm-oc-model" value="deepseek-chat">
+        </div>
+        <div id="llm-o" style="display:none">
+          <label>API Key</label>
+          <input type="password" id="cfg-llm-o-key" placeholder="sk-...">
+          <label>Model</label>
+          <input id="cfg-llm-o-model" value="gpt-4o-mini">
+        </div>
+        <div id="llm-ol" style="display:none">
+          <label>Base URL</label>
+          <input id="cfg-llm-ol-url" value="http://localhost:11434/v1">
+          <label>Model</label>
+          <input id="cfg-llm-ol-model" value="qwen2.5:7b">
+        </div>
+        <label>温度</label>
+        <div class="slider-row">
+          <input type="range" id="cfg-temp" min="0" max="2" step="0.1" value="0.9" oninput="document.getElementById('tempVal').textContent=parseFloat(this.value).toFixed(1)">
+          <span class="slider-val" id="tempVal">0.9</span>
+        </div>
+        <label>最大 Token</label>
+        <input type="number" id="cfg-max-tokens" value="300" min="50" max="2000">
+      </div>
+
+      <div class="tab-content" id="tab-tts">
+        <label>
+          <input type="checkbox" id="cfg-tts-enabled" onchange="document.getElementById('tts-detail').style.display=this.checked?'block':'none'">
+          启用语音合成 (MiniMax TTS)
+        </label>
+        <div id="tts-detail" style="display:none">
+          <label>MiniMax API Key</label>
+          <input type="password" id="cfg-tts-key" placeholder="输入MiniMax API Key...">
+          <label>音色 (voice_id)</label>
+          <select id="cfg-tts-voice">
+            <option value="female-shaonv">少女音 (female-shaonv)</option>
+            <option value="male-qn-qingse">温柔男声 (male-qn-qingse)</option>
+            <option value="presenter_female">播音女声 (presenter_female)</option>
+            <option value="presenter_male">播音男声 (presenter_male)</option>
+            <option value="male-qn-jingying">精英男声 (male-qn-jingying)</option>
+            <option value="audiobook_female_1">有声书女 (audiobook_female_1)</option>
+            <option value="audiobook_male_1">有声书男 (audiobook_male_1)</option>
+            <option value="clever_boy">聪明男孩 (clever_boy)</option>
+            <option value="cute_boy">可爱男孩 (cute_boy)</option>
+            <option value="lovely_girl">可爱女孩 (lovely_girl)</option>
+          </select>
+          <label>语速</label>
+          <div class="slider-row">
+            <input type="range" id="cfg-tts-speed" min="0.5" max="2.0" step="0.1" value="1.0" oninput="document.getElementById('speedVal').textContent=parseFloat(this.value).toFixed(1)">
+            <span class="slider-val" id="speedVal">1.0</span>
+          </div>
+          <label>音量</label>
+          <div class="slider-row">
+            <input type="range" id="cfg-tts-vol" min="0.1" max="2.0" step="0.1" value="1.0" oninput="document.getElementById('volVal').textContent=parseFloat(this.value).toFixed(1)">
+            <span class="slider-val" id="volVal">1.0</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-header" style="border-top:1px solid var(--border);border-bottom:none;justify-content:flex-end">
+      <button class="btn btn-start" onclick="saveSettings()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let running=false,logCount=0;
+async function init(){
+  await loadConfig();poll();setInterval(poll,1000);
+}
+let ttsQueue=[],ttsPlaying=false,ttsOn=false;
+function toggleTts(){
+  ttsOn=!ttsOn;
+  document.getElementById('btnTts').textContent=ttsOn?'🔊':'🔇';
+  fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({tts:{enabled:ttsOn}})});
+}
+function playTtsQueue(){
+  if(ttsPlaying||ttsQueue.length===0)return;
+  ttsPlaying=true;
+  const buf=ttsQueue.shift();
+  const blob=new Blob([buf],{type:'audio/wav'});
+  const url=URL.createObjectURL(blob);
+  const a=new Audio(url);
+  a.onended=()=>{ttsPlaying=false;URL.revokeObjectURL(url);setTimeout(playTtsQueue,100)};
+  a.play();
+}
+let lastTtsCheck=0;
+async function poll(){
+  try{
+    const r=await fetch('/api/status'),s=await r.json();
+    updateStatus(s);
+    const l=await fetch('/api/logs'),d=await l.json();
+    for(const line of d.logs||[]){addLog(line)}
+    const now=Date.now();
+    if(now-lastTtsCheck>1500){
+      lastTtsCheck=now;
+      fetch('/api/tts-audio').then(r=>{if(r.status===200)return r.arrayBuffer()}).then(buf=>{
+        if(buf){ttsQueue.push(buf);playTtsQueue()}
+      }).catch(()=>{});
+    }
+  }catch(e){}
+}
+function updateStatus(s){
+  const dot=document.getElementById('statusDot'),btn=document.getElementById('btnToggle'),txt=document.getElementById('statusText');
+  if(s.running&&running){dot.className='status-dot on';txt.innerHTML='<strong>🟢 运行中</strong> · 监听语音...';btn.textContent='■ 停止';btn.className='btn btn-stop'}
+  else if(!s.running&&!running){dot.className='status-dot';txt.innerHTML='<strong>⚫ 就绪</strong> · 点击启动';btn.textContent='▶ 开启对话';btn.className='btn btn-start'}
+  running=s.running;
+}
+function addLog(text){
+  const body=document.getElementById('logBody');
+  if(body.children[0]&&body.children[0].textContent.trim()==='等待启动...')body.children[0].remove();
+  const line=document.createElement('div');line.className='log-line';
+  let cls='';if(text.includes('[ERROR]')||text.includes('失败'))cls='pink';
+  else if(text.includes('识别结果')||text.includes('✅'))cls='green';
+  else if(text.includes('OSC')||text.includes('typing'))cls='cyan';
+  else if(text.includes('检测到语音')||text.includes('重置'))cls='yellow';
+  line.innerHTML=`<span class="${cls}">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`;
+  body.appendChild(line);body.scrollTop=body.scrollHeight;
+  document.getElementById('logCount').textContent=`${++logCount} 条日志`;
+}
+async function toggle(){
+  if(running){await fetch('/api/stop',{method:'POST'});running=false;updateStatus({running:false})}
+  else{addLog('🔄 正在启动...');const r=await fetch('/api/start',{method:'POST'});const d=await r.json();
+    if(d.ok){running=true;updateStatus({running:true})}else{addLog('❌ 启动失败: '+d.error)}}
+}
+async function loadConfig(){
+  try{const r=await fetch('/api/config'),c=await r.json();
+    document.getElementById('cfg-prompt').value=c.system_prompt||'';
+    document.getElementById('cfg-prefix').value=c.reply_prefix||'';
+    document.getElementById('cfg-stt-provider').value=c.stt_provider||'groq_whisper';
+    document.getElementById('cfg-llm-provider').value=c.llm_provider||'openai_compatible';
+    document.getElementById('cfg-temp').value=c.temperature||0.9;
+    document.getElementById('tempVal').textContent=parseFloat(c.temperature||0.9).toFixed(1);
+    document.getElementById('cfg-max-tokens').value=c.max_tokens||300;
+    // TTS
+    if(c.tts_enabled){ttsOn=true;document.getElementById('btnTts').textContent='🔊';document.getElementById('cfg-tts-enabled').checked=true;document.getElementById('tts-detail').style.display='block'}
+    if(c.tts_key)document.getElementById('cfg-tts-key').value=c.tts_key;
+    if(c.tts_voice)document.getElementById('cfg-tts-voice').value=c.tts_voice;
+    if(c.tts_speed){document.getElementById('cfg-tts-speed').value=c.tts_speed;document.getElementById('speedVal').textContent=parseFloat(c.tts_speed).toFixed(1)}
+    if(c.tts_vol){document.getElementById('cfg-tts-vol').value=c.tts_vol;document.getElementById('volVal').textContent=parseFloat(c.tts_vol).toFixed(1)}
+    // API Keys
+    if(c.stt_groq_key)document.getElementById('cfg-groq-key').value=c.stt_groq_key;
+    if(c.stt_openai_key)document.getElementById('cfg-openai-key').value=c.stt_openai_key;
+    if(c.stt_qwen_key)document.getElementById('cfg-qwen-key').value=c.stt_qwen_key;
+    if(c.llm_oc_key)document.getElementById('cfg-llm-oc-key').value=c.llm_oc_key;
+    if(c.llm_o_key)document.getElementById('cfg-llm-o-key').value=c.llm_o_key;
+    updateSTTFields();updateLLMFields();
+  }catch(e){}
+}
+function openSettings(){document.getElementById('modalOverlay').classList.add('open')}
+function closeSettings(){document.getElementById('modalOverlay').classList.remove('open')}
+function switchTab(id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelector(`.tab[onclick*="${id}"]`).classList.add('active');document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));document.getElementById('tab-'+id).classList.add('active')}
+function updateSTTFields(){const v=document.getElementById('cfg-stt-provider').value;document.getElementById('stt-groq').style.display=v==='groq_whisper'?'block':'none';document.getElementById('stt-openai').style.display=v==='openai_whisper'?'block':'none';document.getElementById('stt-qwen').style.display=v==='dashscope_qwen_asr'?'block':'none'}
+function updateLLMFields(){const v=document.getElementById('cfg-llm-provider').value;document.getElementById('llm-oc').style.display=v==='openai_compatible'?'block':'none';document.getElementById('llm-o').style.display=v==='openai'?'block':'none';document.getElementById('llm-ol').style.display=v==='ollama'?'block':'none'}
+async function saveSettings(){
+  const cfg={system_prompt:document.getElementById('cfg-prompt').value,
+    chat:{reply_prefix:document.getElementById('cfg-prefix').value,temperature:parseFloat(document.getElementById('cfg-temp').value),max_tokens:parseInt(document.getElementById('cfg-max-tokens').value)},
+    stt:{provider:document.getElementById('cfg-stt-provider').value,groq_whisper:{api_key:document.getElementById('cfg-groq-key').value},openai_whisper:{api_key:document.getElementById('cfg-openai-key').value,base_url:''},dashscope_qwen_asr:{api_key:document.getElementById('cfg-qwen-key').value,model:document.getElementById('cfg-qwen-model').value}},
+    llm:{provider:document.getElementById('cfg-llm-provider').value,openai_compatible:{api_key:document.getElementById('cfg-llm-oc-key').value,base_url:document.getElementById('cfg-llm-oc-url').value,model:document.getElementById('cfg-llm-oc-model').value},openai:{api_key:document.getElementById('cfg-llm-o-key').value,base_url:'',model:document.getElementById('cfg-llm-o-model').value},ollama:{base_url:document.getElementById('cfg-llm-ol-url').value,model:document.getElementById('cfg-llm-ol-model').value}},
+    tts:{enabled:document.getElementById('cfg-tts-enabled').checked,minimax:{api_key:document.getElementById('cfg-tts-key').value,voice_id:document.getElementById('cfg-tts-voice').value,speed:parseFloat(document.getElementById('cfg-tts-speed').value),vol:parseFloat(document.getElementById('cfg-tts-vol').value),sample_rate:32000}}};
+  await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+  addLog('⚙ 设置已保存');closeSettings();
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeSettings()});
+init();
+</script>
+</body>
+</html>

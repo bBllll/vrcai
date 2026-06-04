@@ -1,0 +1,74 @@
+# VRChat LLM Bridge - 音频捕获
+audio:
+  device: null          # 音频设备编号，null=自动检测。运行 python bridge.py --list-devices 查看
+  sample_rate: 16000
+  chunk_duration: 0.1
+
+# 语音识别 (STT)
+stt:
+  provider: groq_whisper   # groq_whisper / openai_whisper / dashscope_qwen_asr
+  groq_whisper:
+    api_key: ""            # https://console.groq.com/keys
+  openai_whisper:
+    api_key: ""
+    base_url: ""
+  dashscope_qwen_asr:
+    api_key: ""            # https://dashscope.console.aliyun.com/apiKey
+    model: qwen3-asr-flash
+  funasr:
+    model: iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch
+    device: cpu
+
+# OSC 发送
+osc:
+  vrc_port: 9000
+  host: 127.0.0.1
+
+# 语音合成 (MiniMax TTS)
+tts:
+  enabled: false
+  output_device: null
+  minimax:
+    api_key: ""            # https://platform.minimaxi.com
+    voice_id: female-shaonv
+    speed: 1.0
+    vol: 1.0
+
+# 对话模型 (LLM)
+llm:
+  provider: openai_compatible   # openai_compatible / openai / ollama
+  openai:
+    api_key: ""
+    model: gpt-4o-mini
+    base_url: ""
+  openai_compatible:
+    api_key: ""            # DeepSeek: https://platform.deepseek.com
+    base_url: https://api.deepseek.com/v1
+    model: deepseek-chat
+  ollama:
+    base_url: http://localhost:11434/v1
+    model: qwen2.5:7b
+
+# 对话行为
+chat:
+  trigger_prefix: ""
+  reply_prefix: "(AI喜多郁代) "
+  max_history: 20
+  max_tokens: 300
+  temperature: 0.7
+
+# 人设
+system_prompt: |
+  你是喜多郁代，普通日本女高，性格开朗活泼，社交能力强。
+  你现在和朋友在VRChat里聊天，说中文。
+  回复简洁自然，控制在30字以内，语气活泼可爱。
+
+# 流式输出
+streaming:
+  enabled: false
+  split_chars: ["。", "！", "？", "!", "?", "\n", "~"]
+  sentence_delay: 0.8
+
+# 日志级别
+logging:
+  level: INFO
