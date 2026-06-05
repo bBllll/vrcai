@@ -330,6 +330,7 @@ class AudioCapture:
         """查找立体声混音 / Virtual Cable(WASAPI 优先)"""
         best, best_score = None, -1
         for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
             if info['maxInputChannels'] == 0:
                 continue
             api = p.get_host_api_info_by_index(info['hostApi'])['name']
@@ -463,8 +464,8 @@ class AudioCapture:
         else:
             self._noise_floor = (self._noise_alpha * rms + (1 - self._noise_alpha) * self._noise_floor)
 
-        # 阈值 = 噪底 × 1.5,最低 +7
-        threshold = max(self._noise_floor * 1.5, self._noise_floor + 7.0)
+        # 阈值 = 噪底 × 1.5,最低 +1.5
+        threshold = max(self._noise_floor * 1.5, self._noise_floor + 1.5)
         audio_bytes = indata.tobytes()
 
         if rms > threshold:
@@ -912,7 +913,7 @@ class VRChatLLMBridge:
                 time.sleep(5)
                 rms = self.audio.current_rms
                 noise = self.audio._noise_floor
-                threshold = max(noise * 1.5, noise + 7.0)
+                threshold = max(noise * 1.5, noise + 1.5)
                 bar = "█" * int(min(rms / max(threshold, 0.001), 30))
                 if rms > threshold:
                     log.info("🔊 电平: %.4f  噪底: %.4f  阈值: %.4f  %s (语音)",
