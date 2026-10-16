@@ -1,0 +1,5 @@
+-r requirements.txt
+funasr>=1.1,<2
+torch>=2.2,<3
+torchaudio>=2.2,<3
+modelscope>=1.15,<2

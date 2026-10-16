@@ -1,174 +1,257 @@
 #!/usr/bin/env python3
-"""VRChat LLM Bridge - Web GUI 后端"""
-import sys, os, json, queue, time, threading, logging
-from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
+"""Loopback-only web control with same-origin session authentication."""
 
-sys.path.insert(0, str(Path(__file__).parent))
-from bridge import VRChatLLMBridge, load_config
+from __future__ import annotations
 
-# 全局状态
-_state = {"bridge": None, "thread": None}
-log_queue = queue.Queue()
+import argparse
+import hmac
+import json
+import logging
+import secrets
+import socket
+from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
-# ---- API Handler ----
+from vrcai.config import ConfigError, ConfigStore, ROOT, redact
+from vrcai.audio import list_devices
+from vrcai.providers import api_key, safe_error
+from vrcai.service import BridgeController
+
+
+class LogBuffer(logging.Handler):
+    def __init__(self, capacity=1000):
+        super().__init__()
+        self.entries = deque(maxlen=capacity)
+        self.cursor = 0
+        self.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
+
+    def emit(self, record):
+        with self.lock:
+            self.cursor += 1
+            self.entries.append({"id": self.cursor, "text": self.format(record)[:2000]})
+
+    def read(self, after):
+        with self.lock:
+            return {"logs": [e for e in self.entries if e["id"] > after][-200:], "cursor": self.cursor}
+
+
+class BridgeHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, address, controller, logs=None):
+        if address[0] != "127.0.0.1":
+            raise ValueError("管理界面只能监听 127.0.0.1")
+        super().__init__(address, APIHandler)
+        self.controller = controller
+        self.logs = logs or LogBuffer()
+        self.token = secrets.token_urlsafe(32)
+        port = self.server_address[1]
+        self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        self.origins = {"http://" + h for h in self.hosts}
+
 
 class APIHandler(BaseHTTPRequestHandler):
-    def log_message(self, *args): pass  # 静音 HTTP 日志
+    server_version = "VRChatBridge"
+    sys_version = ""
 
-    def _send_json(self, data, status=200):
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps(data, ensure_ascii=False).encode())
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(5)
 
-    def do_GET(self):
-        b = _state["bridge"]
-        path = urlparse(self.path).path
-        if path == "/api/status":
-            self._send_json({
-                "running": b is not None and _state["thread"] is not None and _state["thread"].is_alive(),
-                "audio_device": getattr(b.audio, '_stream', None) is not None if b else False,
-            })
-        elif path == "/api/tts-audio":
-            b = _state["bridge"]
-            if b and b._latest_tts_wav:
-                wav = b._latest_tts_wav
-                b._latest_tts_wav = None  # 消费掉
-                self.send_response(200)
-                self.send_header("Content-Type", "audio/wav")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                self.wfile.write(wav)
-            else:
-                self.send_response(204)
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-        elif path == "/api/logs":
-            logs = []
-            while not log_queue.empty():
-                try:
-                    logs.append(log_queue.get_nowait())
-                except queue.Empty:
-                    break
-            self._send_json({"logs": logs[-100:]})  # 最多 100 条
-        elif path == "/api/config":
-            cfg = load_config()
-            # 隐藏敏感字段
-            safe = {
-                "system_prompt": cfg.get("system_prompt", ""),
-                "reply_prefix": cfg.get("chat", {}).get("reply_prefix", ""),
-                "stt_provider": cfg.get("stt", {}).get("provider", ""),
-                "llm_provider": cfg.get("llm", {}).get("provider", ""),
-                "llm_model": cfg.get("llm", {}).get(cfg.get("llm", {}).get("provider", ""), {}).get("model", ""),
-                "temperature": cfg.get("chat", {}).get("temperature", 0.9),
-                "max_tokens": cfg.get("chat", {}).get("max_tokens", 300),
-                "audio_device": cfg.get("audio", {}).get("device", None),
-                "tts_enabled": cfg.get("tts", {}).get("enabled", False),
-                "tts_key": cfg.get("tts", {}).get("minimax", {}).get("api_key", ""),
-                "tts_voice": cfg.get("tts", {}).get("minimax", {}).get("voice_id", ""),
-                "tts_speed": cfg.get("tts", {}).get("minimax", {}).get("speed", 1.0),
-                "tts_vol": cfg.get("tts", {}).get("minimax", {}).get("vol", 1.0),
-                "stt_groq_key": cfg.get("stt", {}).get("groq_whisper", {}).get("api_key", ""),
-                "stt_openai_key": cfg.get("stt", {}).get("openai_whisper", {}).get("api_key", ""),
-                "stt_qwen_key": cfg.get("stt", {}).get("dashscope_qwen_asr", {}).get("api_key", ""),
-                "llm_oc_key": cfg.get("llm", {}).get("openai_compatible", {}).get("api_key", ""),
-                "llm_o_key": cfg.get("llm", {}).get("openai", {}).get("api_key", ""),
-            }
-            self._send_json(safe)
-        elif path == "/" or path == "":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            html = (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
-            self.wfile.write(html.encode())
-        else:
-            self._send_json({"error": "not found"}, 404)
-
-    def do_POST(self):
-        path = urlparse(self.path).path
-        if path == "/api/start":
-            try:
-                _state["bridge"] = VRChatLLMBridge(load_config())
-                _state["thread"] = threading.Thread(target=_run_bridge, daemon=True)
-                _state["thread"].start()
-                time.sleep(0.5)
-                self._send_json({"ok": True})
-            except Exception as e:
-                self._send_json({"ok": False, "error": str(e)}, 500)
-        elif path == "/api/stop":
-            b = _state["bridge"]
-            if b:
-                b._stt_stop.set()
-                b.audio.stop()
-            _state["bridge"] = None
-            _state["thread"] = None
-            self._send_json({"ok": True})
-        elif path == "/api/config":
-            try:
-                body_len = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(body_len))
-                cfg = load_config()
-                _merge_config(cfg, body)
-                import yaml
-                with open(Path(__file__).parent / "config.yaml", "w", encoding="utf-8") as f:
-                    yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-                self._send_json({"ok": True})
-            except Exception as e:
-                self._send_json({"ok": False, "error": str(e)}, 500)
-        else:
-            self._send_json({"error": "not found"}, 404)
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
-
-def _merge_config(cfg, updates):
-    """递归合并配置。"""
-    for k, v in updates.items():
-        if isinstance(v, dict) and k in cfg and isinstance(cfg[k], dict):
-            _merge_config(cfg[k], v)
-        else:
-            cfg[k] = v
-
-def _run_bridge():
-    b = _state["bridge"]
-    try:
-        b.start()
-    except Exception:
+    def log_message(self, *args):
         pass
 
-# ---- 日志桥接 ----
+    def _headers(self, status, content_type, size):
+        self.send_response(status)
+        for key, value in {
+            "Content-Type": content_type,
+            "Content-Length": str(size),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+            "X-Frame-Options": "DENY",
+            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        }.items():
+            self.send_header(key, value)
+        self.end_headers()
 
-class BridgeLogHandler(logging.Handler):
-    def emit(self, record):
-        log_queue.put(self.format(record))
+    def _send(self, data, status=200):
+        raw = json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self._headers(status, "application/json; charset=utf-8", len(raw))
+        self.wfile.write(raw)
 
-def setup_logging():
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    handler = BridgeLogHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
-    root.addHandler(handler)
-    for noisy in ("httpx", "openai", "httpcore", "urllib3"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    def _guard(self, auth=True):
+        if self.headers.get("Host", "") not in self.server.hosts:
+            self._send({"error": "Host 不允许"}, 403)
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin not in self.server.origins:
+            self._send({"error": "仅允许本机同源访问"}, 403)
+            return False
+        if self.headers.get("Sec-Fetch-Site") == "cross-site":
+            self._send({"error": "不允许跨站访问"}, 403)
+            return False
+        token = self.headers.get("X-Session-Token", "")
+        if auth and not hmac.compare_digest(token.encode("utf-8"), self.server.token.encode("utf-8")):
+            self._send({"error": "会话已失效，请刷新页面"}, 403)
+            return False
+        return True
 
-# ---- 入口 ----
+    def _body(self):
+        if self.headers.get("Transfer-Encoding"):
+            raise ConfigError("不支持分块请求体")
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ConfigError("无效的请求长度") from exc
+        if not 0 < size <= 65536:
+            raise ConfigError("请求体必须为1～65536字节")
+        if self.headers.get_content_type() != "application/json":
+            raise ConfigError("请使用 application/json")
+        raw = self.rfile.read(size)
+        if len(raw) != size:
+            raise ConfigError("请求体不完整")
+        try:
+            data = json.loads(raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite")))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ConfigError("请求必须是有效的 JSON") from exc
+        if not isinstance(data, dict):
+            raise ConfigError("请求必须是 JSON 对象")
+        return data
+
+    def do_GET(self):
+        path = urlsplit(self.path).path
+        if not self._guard(auth=path.startswith("/api/")):
+            return
+        try:
+            controller = self.server.controller
+            if path in ("/", "/app.js"):
+                name = "index.html" if path == "/" else "app.js"
+                content = (ROOT / name).read_text(encoding="utf-8-sig")
+                if path == "/":
+                    content = content.replace("__SESSION_TOKEN__", self.server.token)
+                raw = content.encode("utf-8")
+                self._headers(
+                    200, "text/html; charset=utf-8" if path == "/" else "text/javascript; charset=utf-8", len(raw)
+                )
+                self.wfile.write(raw)
+            elif path == "/api/status":
+                self._send(controller.status())
+            elif path == "/api/config":
+                cfg = controller.store.load()
+                safe = redact(cfg)
+                for section in ("stt", "llm", "tts"):
+                    for name, provider in safe[section].items():
+                        if isinstance(provider, dict) and "api_key" in provider:
+                            provider["key_configured"] = bool(api_key(cfg, section, name))
+                self._send(safe)
+            elif path == "/api/logs":
+                after = max(0, int(parse_qs(urlsplit(self.path).query).get("after", ["0"])[0]))
+                self._send(self.server.logs.read(after))
+            elif path == "/api/devices":
+                self._send({"devices": list_devices()})
+            elif path == "/api/diagnostics":
+                self._send({"checks": controller.diagnostics()})
+            else:
+                self._send({"error": "接口不存在"}, 404)
+        except (ConfigError, ValueError) as exc:
+            self._send({"error": str(exc) if isinstance(exc, ConfigError) else "请求参数无效"}, 400)
+        except (BrokenPipeError, ConnectionResetError, socket.timeout):
+            pass
+        except Exception as exc:
+            self._send({"error": safe_error(exc)}, 500)
+
+    def do_POST(self):
+        if not self._guard():
+            return
+        try:
+            body = self._body()
+            path = urlsplit(self.path).path
+            controller = self.server.controller
+            if path == "/api/start":
+                result = controller.start()
+            elif path == "/api/stop":
+                result = controller.stop()
+            elif path == "/api/config":
+                cfg = controller.update_config(body)
+                result = {"config": redact(cfg), "restart_required": controller.restart_required}
+            elif path == "/api/message":
+                if not isinstance(body.get("text"), str):
+                    raise ConfigError("text 必须是字符串")
+                controller.require_bridge().submit_text(body["text"])
+                result = {}
+            elif path in ("/api/interrupt", "/api/reset", "/api/listen"):
+                bridge = controller.require_bridge()
+                if path == "/api/interrupt":
+                    bridge.interrupt()
+                elif path == "/api/reset":
+                    bridge.reset()
+                else:
+                    if type(body.get("active")) is not bool:
+                        raise ConfigError("active 必须是布尔值")
+                    bridge.set_listening(body["active"])
+                result = {}
+            elif path == "/api/test-osc":
+                cfg = controller.store.load()
+                from pythonosc.udp_client import SimpleUDPClient
+
+                client = SimpleUDPClient(cfg["osc"]["host"], cfg["osc"]["vrc_port"])
+                try:
+                    client.send_message("/chatbox/input", ["VRChat AI: OSC test", True, False])
+                finally:
+                    client._sock.close()
+                result = {"message": "测试消息已发送，请在 VRChat 内确认；UDP 不提供送达确认"}
+            else:
+                self._send({"error": "接口不存在"}, 404)
+                return
+            self._send({"ok": True, **result})
+        except ConfigError as exc:
+            self._send({"ok": False, "error": str(exc)}, 400)
+        except (BrokenPipeError, ConnectionResetError, socket.timeout):
+            pass
+        except Exception as exc:
+            self._send({"ok": False, "error": safe_error(exc)}, 500)
+
+    def do_OPTIONS(self):
+        self._send({"error": "不允许跨来源请求"}, 403)
+
 
 def main():
-    setup_logging()
-    port = 8765
-    server = HTTPServer(("127.0.0.1", port), APIHandler)
-    print(f"🌐 VRChat LLM Bridge Web GUI: http://127.0.0.1:{port}")
+    parser = argparse.ArgumentParser(description="VRChat LLM Bridge Web GUI")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--config")
+    parser.add_argument("--open", action="store_true", help="服务就绪后打开浏览器")
+    args = parser.parse_args()
+    logs = LogBuffer()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logging.getLogger("vrcai").addHandler(logs)
+    for name in ("httpx", "httpcore", "openai", "urllib3"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+    controller = BridgeController(ConfigStore(args.config))
     try:
-        server.serve_forever()
+        server = BridgeHTTPServer(("127.0.0.1", args.port), controller, logs)
+    except OSError:
+        print("无法启动管理界面：端口可能已占用，请关闭旧窗口或使用 --port 8766")
+        return 1
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    print(f"VRChat LLM Bridge: {url}")
+    if args.open:
+        import webbrowser
+
+        webbrowser.open(url)
+    try:
+        server.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
-        server.shutdown()
+        pass
+    finally:
+        server.server_close()
+        controller.stop(wait=3)
+        if controller.thread and controller.thread.is_alive():
+            print("正在等待当前请求结束…")
+            controller.thread.join()
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
