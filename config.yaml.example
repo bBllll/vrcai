@@ -1,74 +1,86 @@
-# VRChat LLM Bridge - 音频捕获
+# VRChat LLM Bridge 0.2.0 - 默认配置，密钥请仅写入本机 config.yaml
 audio:
-  device: null          # 音频设备编号，null=自动检测。运行 python bridge.py --list-devices 查看
+  device: null
   sample_rate: 16000
-  chunk_duration: 0.1
-
-# 语音识别 (STT)
+  chunk_duration: 0.02
+  silence_duration: 0.7
+  min_speech_duration: 0.16
+  max_speech_duration: 15.0
+  pre_roll_duration: 0.2
+  energy_threshold: 150.0
+  noise_ratio: 2.5
 stt:
-  provider: groq_whisper   # groq_whisper / openai_whisper / dashscope_qwen_asr
+  provider: groq_whisper
+  language: ''
   groq_whisper:
-    api_key: ""            # https://console.groq.com/keys
+    api_key: ''
+    model: whisper-large-v3
   openai_whisper:
-    api_key: ""
-    base_url: ""
+    api_key: ''
+    base_url: ''
+    model: whisper-1
   dashscope_qwen_asr:
-    api_key: ""            # https://dashscope.console.aliyun.com/apiKey
+    api_key: ''
     model: qwen3-asr-flash
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   funasr:
     model: iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch
     device: cpu
-
-# OSC 发送
-osc:
-  vrc_port: 9000
-  host: 127.0.0.1
-
-# 语音合成 (MiniMax TTS)
-tts:
-  enabled: false
-  output_device: null
-  minimax:
-    api_key: ""            # https://platform.minimaxi.com
-    voice_id: female-shaonv
-    speed: 1.0
-    vol: 1.0
-
-# 对话模型 (LLM)
 llm:
-  provider: openai_compatible   # openai_compatible / openai / ollama
+  provider: openai_compatible
   openai:
-    api_key: ""
+    api_key: ''
+    base_url: ''
     model: gpt-4o-mini
-    base_url: ""
   openai_compatible:
-    api_key: ""            # DeepSeek: https://platform.deepseek.com
+    api_key: ''
     base_url: https://api.deepseek.com/v1
     model: deepseek-chat
   ollama:
     base_url: http://localhost:11434/v1
     model: qwen2.5:7b
-
-# 对话行为
+tts:
+  enabled: false
+  output_device: null
+  mute_capture: true
+  minimax:
+    api_key: ''
+    voice_id: female-shaonv
+    model: speech-01-turbo
+    base_url: https://api.minimaxi.com/v1
+    speed: 1.0
+    vol: 1.0
+    sample_rate: 32000
+osc:
+  host: 127.0.0.1
+  vrc_port: 9000
+  max_chars: 144
+  send_interval: 1.5
 chat:
-  trigger_prefix: ""
-  reply_prefix: "(AI喜多郁代) "
+  trigger_prefix: ''
+  reply_prefix: '(AI喜多郁代) '
   max_history: 20
   max_tokens: 300
   temperature: 0.7
-
-# 人设
-system_prompt: |
-  你是喜多郁代，普通日本女高，性格开朗活泼，社交能力强。
-  你现在和朋友在VRChat里聊天，说中文。
-  回复简洁自然，控制在30字以内，语气活泼可爱。
-
-# 流式输出
+  queue_size: 3
+  max_input_age: 20.0
+  listen_mode: continuous
+system_prompt: 你是喜多郁代，性格开朗活泼。你和朋友在 VRChat 里聊天，说中文。回复简洁自然，尽量在30字以内。
 streaming:
   enabled: false
-  split_chars: ["。", "！", "？", "!", "?", "\n", "~"]
-  sentence_delay: 0.8
+  split_chars:
+  - 。
+  - ！
+  - ？
+  - '!'
+  - '?'
+  - '
 
-# 日志级别
+    '
+  - '~'
+  sentence_delay: 0.8
+network:
+  timeout: 20.0
+  max_retries: 0
 logging:
   level: INFO
